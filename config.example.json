@@ -1,0 +1,13 @@
+{
+  "site_name": "Polymarket GOAT Board",
+  "poll_seconds": 15,
+  "market": {
+    "slug": "btc-updown-5m-1775044500",
+    "condition_id": "0x551ce2ff635a43a7991324f2c7f78fbf3a500c4534b5e88d75d2d3e4b9695720",
+    "yes_asset_id": "62872260186070461020648361276748914553621840424688194736032269750369599013213",
+    "no_asset_id": "63089392646777967265300632100033496358045700681445841230669164211875621159349"
+  },
+  "notifications": {
+    "browser_notifications": true
+  }
+}
