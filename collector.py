@@ -100,8 +100,15 @@ def fetch_market_holders(conn, condition_id: str):
     return added
 
 
-def fetch_recent_trades(conn, wallet: str, limit: int = 20):
-    data = safe_get_json(f"{DATA_API}/trades", params={"user": wallet})
+def fetch_recent_trades(conn, wallet: str, condition_id: str, limit: int = 20):
+    data = safe_get_json(
+        f"{DATA_API}/trades",
+        params={
+            "user": wallet,
+            "market": condition_id,
+            "limit": limit
+        }
+    )
     if not data:
         return []
 
@@ -125,6 +132,8 @@ def fetch_recent_trades(conn, wallet: str, limit: int = 20):
         title = row.get("title") or row.get("marketTitle") or row.get("question") or "Unknown market"
         market_slug = row.get("slug") or row.get("marketSlug") or ""
         timestamp = int(row.get("timestamp", 0) or row.get("time", 0) or 0)
+if timestamp and timestamp < 10_000_000_000:
+    timestamp *= 1000
 
         conn.execute(
             """
@@ -283,7 +292,7 @@ def collector_loop():
 
         for row in wallets:
             wallet = row["address"]
-            fetch_recent_trades(conn, wallet, limit=20)
+            fetch_recent_trades(conn, wallet, condition_id, limit=20)
             score_wallet(conn, wallet)
 
         mark_elite_wallet_trades(conn)
