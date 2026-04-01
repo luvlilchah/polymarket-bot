@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="refresh" content="5">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ config.site_name }}</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #0f1115;
+      color: #f5f7fa;
+      margin: 0;
+      padding: 0;
+    }
+    .wrap {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    h1, h2 {
+      margin: 0 0 16px 0;
+    }
+    .sub {
+      color: #aab3c2;
+      margin-bottom: 24px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 20px;
+    }
+    .card {
+      background: #171b22;
+      border: 1px solid #232a35;
+      border-radius: 14px;
+      padding: 18px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      padding: 10px 8px;
+      border-bottom: 1px solid #232a35;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      color: #9fb0c7;
+      font-weight: 600;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    tr:hover {
+      background: #1d2330;
+    }
+    .mono {
+      font-family: Consolas, Monaco, monospace;
+      font-size: 12px;
+    }
+    .elite {
+      color: #ffd54a;
+      font-weight: 700;
+    }
+    .pill {
+      display: inline-block;
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: #222a36;
+      color: #d9e2f2;
+      font-size: 12px;
+      margin-right: 6px;
+    }
+    .good {
+      color: #56d364;
+      font-weight: 600;
+    }
+    .muted {
+      color: #94a0b4;
+    }
+    .small {
+      font-size: 12px;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .notice {
+      background: #101722;
+      border: 1px solid #243247;
+      border-radius: 10px;
+      padding: 10px 12px;
+      color: #cfe1ff;
+      margin-bottom: 18px;
+      font-size: 13px;
+    }
+    @media (max-width: 1000px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+      table {
+        font-size: 12px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <h1>{{ config.site_name }}</h1>
+        <div class="sub">
+          Market: <span class="pill">{{ config.market.slug }}</span>
+          Last refresh: <span class="pill">{{ last_run }}</span>
+        </div>
+      </div>
+      <div class="small muted">
+        Auto-refresh every {{ config.poll_seconds }} seconds
+      </div>
+    </div>
+
+    <div class="notice">
+      This is Phase 1: a live-updating dashboard for GOAT wallets and recent trades.
+      Browser notifications trigger when a new elite-wallet trade appears while this page is open.
+    </div>
+
+    <div class="grid">
+      <div class="card">
+        <h2>GOAT Now</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Wallet</th>
+              <th>Score</th>
+              <th>Streak</th>
+              <th>Recent PnL</th>
+              <th>Avg Size</th>
+              <th>Win Rate</th>
+              <th>Trades</th>
+              <th>Last Trade</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for w in wallets %}
+            <tr>
+              <td>{{ loop.index }}</td>
+              <td>
+                <div {% if loop.index <= 5 %}class="elite"{% endif %}>{{ w["display_name"] }}</div>
+                <div class="mono muted">{{ w["address"] }}</div>
+              </td>
+              <td>{{ "%.2f"|format(w["score"] or 0) }}</td>
+              <td class="good">{{ w["current_streak"] or 0 }}</td>
+              <td>{{ "%.2f"|format(w["recent_pnl"] or 0) }}</td>
+              <td>{{ "%.2f"|format(w["avg_size"] or 0) }}</td>
+              <td>{{ "%.2f"|format((w["recent_win_rate"] or 0) * 100) }}%</td>
+              <td>{{ w["recent_trade_count"] or 0 }}</td>
+              <td>{{ ts_to_iso(w["last_trade_ts"]) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h2>Recent Trades</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Wallet</th>
+              <th>Side</th>
+              <th>Outcome</th>
+              <th>Size</th>
+              <th>Price</th>
+              <th>Market</th>
+              <th>Time</th>
+            </tr>
+          </thead>
+          <tbody id="recent-trades-body">
+            {% for t in recent_trades %}
+            <tr data-tx="{{ t['tx_hash'] }}">
+              <td class="{% if t['is_elite'] %}elite{% endif %} mono">{{ t["wallet"] }}</td>
+              <td>{{ t["side"] }}</td>
+              <td>{{ t["outcome"] }}</td>
+              <td>{{ "%.2f"|format(t["size"] or 0) }}</td>
+              <td>{{ "%.4f"|format(t["price"] or 0) }}</td>
+              <td>{{ t["title"] }}</td>
+              <td>{{ ts_to_iso(t["timestamp"]) }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let seenTrades = new Set();
+
+    function hydrateSeenTrades() {
+      const rows = document.querySelectorAll("#recent-trades-body tr");
+      rows.forEach(row => {
+        const tx = row.getAttribute("data-tx");
+        if (tx) seenTrades.add(tx);
+      });
+    }
+
+    async function maybeEnableNotifications() {
+      if (!("Notification" in window)) return;
+      if (Notification.permission === "default") {
+        try {
+          await Notification.requestPermission();
+        } catch (e) {}
+      }
+    }
+
+    async function pollRecentTrades() {
+      try {
+        const res = await fetch("/api/recent-trades");
+        const data = await res.json();
+
+        for (const trade of data) {
+          if (!seenTrades.has(trade.tx_hash)) {
+            seenTrades.add(trade.tx_hash);
+
+            if (trade.is_elite && "Notification" in window && Notification.permission === "granted") {
+              new Notification("Elite wallet trade detected", {
+                body: `${trade.wallet.slice(0, 10)}... ${trade.side} ${trade.outcome} | ${trade.title}`
+              });
+            }
+          }
+        }
+      } catch (e) {
+        console.log("recent trade poll failed", e);
+      }
+    }
+
+    hydrateSeenTrades();
+    maybeEnableNotifications();
+    setInterval(pollRecentTrades, 5000);
+  </script>
+</body>
+</html>
