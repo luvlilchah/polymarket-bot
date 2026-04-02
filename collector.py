@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -87,15 +88,16 @@ def upsert_wallet(
 
 
 # ---------------------------------------------------------------------------
-# Market discovery — paginated
+# Market discovery
 # ---------------------------------------------------------------------------
 
-def looks_like_btc_5m(text: str) -> bool:
-    t = (text or "").lower()
+def looks_like_btc_5m(row: dict) -> bool:
+    slug = (row.get("slug") or "").lower()
+    question = (row.get("question") or "").lower()
     return (
-        "bitcoin up or down" in t
-        or "btc updown 5m" in t
-        or ("bitcoin" in t and "5" in t and "minute" in t)
+        "btc-updown-5m" in slug
+        or "bitcoin up or down - 5 minutes" in question
+        or "bitcoin up or down" in question
     )
 
 
@@ -105,33 +107,51 @@ def discover_btc_5m_markets() -> tuple[dict | None, list[dict]]:
     for offset in range(0, 1000, 200):
         data = safe_get_json(
             f"{GAMMA_API}/markets",
-            params={"active": "true", "closed": "false", "limit": 200, "offset": offset},
+            params={
+                "limit": 200,
+                "offset": offset,
+                "order": "createdAt",
+                "ascending": "false",
+            },
         )
         if not data or not isinstance(data, list):
             break
         all_rows.extend(data)
         if len(data) < 200:
-            break  # last page
+            break
 
+    now_ms = int(time.time() * 1000)
     btc_markets = []
+
     for row in all_rows:
-        question = row.get("question") or ""
-        slug = row.get("slug") or ""
-        if not looks_like_btc_5m(question) and not looks_like_btc_5m(slug):
+        if not looks_like_btc_5m(row):
             continue
         condition_id = row.get("conditionId")
         if not condition_id:
             continue
-        btc_markets.append(
-            {
-                "slug": slug,
-                "condition_id": condition_id,
-                "question": question,
-                "end_date": row.get("endDate") or row.get("end_date") or "",
-            }
-        )
 
-    btc_markets.sort(key=lambda x: x["end_date"] or "", reverse=True)
+        end_date_raw = row.get("endDate") or row.get("end_date") or ""
+        end_ts = None
+        if end_date_raw:
+            try:
+                end_ts = int(datetime.fromisoformat(
+                    end_date_raw.replace("Z", "+00:00")
+                ).timestamp() * 1000)
+            except Exception:
+                pass
+
+        if not end_ts or end_ts <= now_ms:
+            continue
+
+        btc_markets.append({
+            "slug": row.get("slug") or "",
+            "condition_id": condition_id,
+            "question": row.get("question") or "",
+            "end_date": end_date_raw,
+            "end_ts": end_ts,
+        })
+
+    btc_markets.sort(key=lambda x: x["end_ts"], reverse=True)
     return (btc_markets[0] if btc_markets else None), btc_markets[:ROLLING_MARKETS]
 
 
