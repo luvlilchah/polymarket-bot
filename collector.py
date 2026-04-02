@@ -94,11 +94,20 @@ def upsert_wallet(
 def looks_like_btc_5m(row: dict) -> bool:
     slug = (row.get("slug") or "").lower()
     question = (row.get("question") or "").lower()
-    return (
-        "btc-updown-5m" in slug
-        or "bitcoin up or down - 5 minutes" in question
-        or "bitcoin up or down" in question
-    )
+    series_slug = ""
+    for event in (row.get("events") or []):
+        series_slug = (event.get("seriesSlug") or "").lower()
+
+    # must match BTC 5m series specifically — exclude hourly/15m/other intervals
+    if "btc-updown-5m" in slug:
+        return True
+    if "btc-up-or-down-5m" in series_slug:
+        return True
+    if "bitcoin up or down - 5 minutes" in question:
+        return True
+    if "bitcoin up or down" in question and "5 min" in question:
+        return True
+    return False
 
 
 def discover_btc_5m_markets() -> tuple[dict | None, list[dict]]:
@@ -130,6 +139,7 @@ def discover_btc_5m_markets() -> tuple[dict | None, list[dict]]:
         if not condition_id:
             continue
 
+        # parse end time
         end_date_raw = row.get("endDate") or row.get("end_date") or ""
         end_ts = None
         if end_date_raw:
@@ -143,9 +153,17 @@ def discover_btc_5m_markets() -> tuple[dict | None, list[dict]]:
         if not end_ts or end_ts <= now_ms:
             continue
 
+        # clobTokenIds is what the data API actually uses
+        clob_ids_raw = row.get("clobTokenIds") or "[]"
+        try:
+            clob_token_ids = json.loads(clob_ids_raw)
+        except Exception:
+            clob_token_ids = []
+
         btc_markets.append({
             "slug": row.get("slug") or "",
             "condition_id": condition_id,
+            "clob_token_ids": clob_token_ids,
             "question": row.get("question") or "",
             "end_date": end_date_raw,
             "end_ts": end_ts,
@@ -195,8 +213,8 @@ def fetch_leaderboard_wallets(conn) -> int:
     return added
 
 
-def fetch_market_holders(conn, condition_id: str) -> int:
-    data = safe_get_json(f"{DATA_API}/holders", params={"market": condition_id})
+def fetch_market_holders(conn, token_id: str) -> int:
+    data = safe_get_json(f"{DATA_API}/holders", params={"market": token_id})
     if not data:
         return 0
     rows = _extract_rows(data, "holders", "data")
@@ -211,8 +229,8 @@ def fetch_market_holders(conn, condition_id: str) -> int:
     return added
 
 
-def fetch_market_traders(conn, condition_id: str) -> int:
-    data = safe_get_json(f"{DATA_API}/trades", params={"market": condition_id, "limit": 200})
+def fetch_market_traders(conn, token_id: str) -> int:
+    data = safe_get_json(f"{DATA_API}/trades", params={"market": token_id, "limit": 200})
     if not data:
         return 0
     rows = _extract_rows(data, "history", "data", "trades")
@@ -235,10 +253,10 @@ def _normalize_timestamp(ts) -> int:
     return ts * 1000 if ts and ts < 10_000_000_000 else ts
 
 
-def fetch_recent_trades(conn, wallet: str, condition_id: str, limit: int = 20) -> list[dict]:
+def fetch_recent_trades(conn, wallet: str, token_id: str, limit: int = 20) -> list[dict]:
     data = safe_get_json(
         f"{DATA_API}/trades",
-        params={"user": wallet, "market": condition_id, "limit": limit},
+        params={"user": wallet, "market": token_id, "limit": limit},
     )
     if not data:
         return []
@@ -286,12 +304,12 @@ def fetch_recent_trades(conn, wallet: str, condition_id: str, limit: int = 20) -
 # Rolling realized PnL
 # ---------------------------------------------------------------------------
 
-def rolling_realized_pnl(wallet: str, rolling_condition_ids: list[str]) -> float:
+def rolling_realized_pnl(wallet: str, rolling_token_ids: list[str]) -> float:
     total = 0.0
-    for condition_id in rolling_condition_ids:
+    for token_id in rolling_token_ids:
         data = safe_get_json(
             f"{DATA_API}/trades",
-            params={"user": wallet, "market": condition_id, "limit": 20},
+            params={"user": wallet, "market": token_id, "limit": 20},
         )
         if not data:
             continue
@@ -305,7 +323,7 @@ def rolling_realized_pnl(wallet: str, rolling_condition_ids: list[str]) -> float
 # Wallet scoring
 # ---------------------------------------------------------------------------
 
-def score_wallet(conn, wallet: str, rolling_condition_ids: list[str]) -> None:
+def score_wallet(conn, wallet: str, rolling_token_ids: list[str]) -> None:
     recent_trades = conn.execute(
         """
         SELECT tx_hash, size, price, timestamp, side, outcome, resolved_pnl, is_win
@@ -340,7 +358,7 @@ def score_wallet(conn, wallet: str, rolling_condition_ids: list[str]) -> None:
         if first_result == 0:
             streak = -streak
 
-    rolling_pnl = rolling_realized_pnl(wallet, rolling_condition_ids)
+    rolling_pnl = rolling_realized_pnl(wallet, rolling_token_ids)
 
     now_ms = int(time.time() * 1000)
     age_ms = (now_ms - last_trade_ts) if last_trade_ts else 10 ** 15
@@ -443,20 +461,27 @@ def collector_loop() -> None:
             time.sleep(poll_seconds)
             continue
 
-        current_condition_id = current_market["condition_id"]
-        rolling_condition_ids = [
-            m["condition_id"] for m in rolling_markets if m.get("condition_id")
-        ]
+        # use first clobTokenId for data API calls — conditionId returns empty
+        clob_ids = current_market.get("clob_token_ids") or []
+        current_token_id = clob_ids[0] if clob_ids else current_market["condition_id"]
+
+        # collect all rolling token IDs for PnL scoring
+        rolling_token_ids = []
+        for m in rolling_markets:
+            ids = m.get("clob_token_ids") or []
+            if ids:
+                rolling_token_ids.append(ids[0])
 
         cfg["market"]["slug"] = current_market["slug"]
-        cfg["market"]["condition_id"] = current_condition_id
+        cfg["market"]["condition_id"] = current_market["condition_id"]
+        cfg["market"]["token_id"] = current_token_id
         cfg["market"]["rolling_count"] = len(rolling_markets)
         save_config(cfg)
 
         conn = get_conn()
         try:
-            traders_added = fetch_market_traders(conn, current_condition_id)
-            holders_added = fetch_market_holders(conn, current_condition_id)
+            traders_added = fetch_market_traders(conn, current_token_id)
+            holders_added = fetch_market_holders(conn, current_token_id)
             leaderboard_added = fetch_leaderboard_wallets(conn)
 
             wallets = conn.execute(
@@ -476,8 +501,8 @@ def collector_loop() -> None:
             ).fetchall()
 
             for row in wallets:
-                fetch_recent_trades(conn, row["address"], current_condition_id, limit=20)
-                score_wallet(conn, row["address"], rolling_condition_ids)
+                fetch_recent_trades(conn, row["address"], current_token_id, limit=20)
+                score_wallet(conn, row["address"], rolling_token_ids)
 
             mark_elite_wallet_trades(conn)
 
@@ -499,6 +524,7 @@ def collector_loop() -> None:
         elapsed = time.time() - tick_start
         print(
             f"Done in {elapsed:.1f}s. slug={current_market['slug']} "
+            f"token={current_token_id[:12]}... "
             f"rolling={len(rolling_markets)} traders={traders_added} "
             f"holders={holders_added} leaderboard={leaderboard_added}"
         )
