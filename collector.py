@@ -98,7 +98,6 @@ def looks_like_btc_5m(row: dict) -> bool:
     for event in (row.get("events") or []):
         series_slug = (event.get("seriesSlug") or "").lower()
 
-    # must match BTC 5m series specifically — exclude hourly/15m/other intervals
     if "btc-updown-5m" in slug:
         return True
     if "btc-up-or-down-5m" in series_slug:
@@ -139,7 +138,6 @@ def discover_btc_5m_markets() -> tuple[dict | None, list[dict]]:
         if not condition_id:
             continue
 
-        # parse end time
         end_date_raw = row.get("endDate") or row.get("end_date") or ""
         end_ts = None
         if end_date_raw:
@@ -153,7 +151,6 @@ def discover_btc_5m_markets() -> tuple[dict | None, list[dict]]:
         if not end_ts or end_ts <= now_ms:
             continue
 
-        # clobTokenIds is what the data API actually uses
         clob_ids_raw = row.get("clobTokenIds") or "[]"
         try:
             clob_token_ids = json.loads(clob_ids_raw)
@@ -213,8 +210,9 @@ def fetch_leaderboard_wallets(conn) -> int:
     return added
 
 
-def fetch_market_holders(conn, token_id: str) -> int:
-    data = safe_get_json(f"{DATA_API}/holders", params={"market": token_id})
+def fetch_market_holders(conn, condition_id: str) -> int:
+    # holders endpoint uses condition_id with 'market' param
+    data = safe_get_json(f"{DATA_API}/holders", params={"market": condition_id})
     if not data:
         return 0
     rows = _extract_rows(data, "holders", "data")
@@ -230,7 +228,8 @@ def fetch_market_holders(conn, token_id: str) -> int:
 
 
 def fetch_market_traders(conn, token_id: str) -> int:
-    data = safe_get_json(f"{DATA_API}/trades", params={"market": token_id, "limit": 200})
+    # trades endpoint uses token_id with 'token' param
+    data = safe_get_json(f"{DATA_API}/trades", params={"token": token_id, "limit": 200})
     if not data:
         return 0
     rows = _extract_rows(data, "history", "data", "trades")
@@ -254,9 +253,10 @@ def _normalize_timestamp(ts) -> int:
 
 
 def fetch_recent_trades(conn, wallet: str, token_id: str, limit: int = 20) -> list[dict]:
+    # trades endpoint uses 'token' param not 'market'
     data = safe_get_json(
         f"{DATA_API}/trades",
-        params={"user": wallet, "market": token_id, "limit": limit},
+        params={"user": wallet, "token": token_id, "limit": limit},
     )
     if not data:
         return []
@@ -309,7 +309,7 @@ def rolling_realized_pnl(wallet: str, rolling_token_ids: list[str]) -> float:
     for token_id in rolling_token_ids:
         data = safe_get_json(
             f"{DATA_API}/trades",
-            params={"user": wallet, "market": token_id, "limit": 20},
+            params={"user": wallet, "token": token_id, "limit": 20},
         )
         if not data:
             continue
@@ -461,11 +461,12 @@ def collector_loop() -> None:
             time.sleep(poll_seconds)
             continue
 
-        # use first clobTokenId for data API calls — conditionId returns empty
+        # trades API uses clobTokenId, holders API uses conditionId
         clob_ids = current_market.get("clob_token_ids") or []
         current_token_id = clob_ids[0] if clob_ids else current_market["condition_id"]
+        current_condition_id = current_market["condition_id"]
 
-        # collect all rolling token IDs for PnL scoring
+        # rolling token IDs for PnL scoring
         rolling_token_ids = []
         for m in rolling_markets:
             ids = m.get("clob_token_ids") or []
@@ -473,7 +474,7 @@ def collector_loop() -> None:
                 rolling_token_ids.append(ids[0])
 
         cfg["market"]["slug"] = current_market["slug"]
-        cfg["market"]["condition_id"] = current_market["condition_id"]
+        cfg["market"]["condition_id"] = current_condition_id
         cfg["market"]["token_id"] = current_token_id
         cfg["market"]["rolling_count"] = len(rolling_markets)
         save_config(cfg)
@@ -481,7 +482,7 @@ def collector_loop() -> None:
         conn = get_conn()
         try:
             traders_added = fetch_market_traders(conn, current_token_id)
-            holders_added = fetch_market_holders(conn, current_token_id)
+            holders_added = fetch_market_holders(conn, current_condition_id)
             leaderboard_added = fetch_leaderboard_wallets(conn)
 
             wallets = conn.execute(
