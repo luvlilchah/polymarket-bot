@@ -56,13 +56,17 @@ def upsert_wallet(conn, address: str, source: str = "leaderboard", name: str | N
 
 def looks_like_btc_5m(question: str) -> bool:
     q = (question or "").lower()
-    return "bitcoin up or down" in q or "btc updown 5m" in q or ("bitcoin" in q and "5" in q and "minute" in q)
+    return (
+        "bitcoin up or down" in q
+        or "btc updown 5m" in q
+        or ("bitcoin" in q and "5" in q and "minute" in q)
+    )
 
 
 def discover_btc_5m_markets():
     data = safe_get_json(
         f"{GAMMA_API}/markets",
-        params={"active": "true", "closed": "false", "limit": 200}
+        params={"active": "true", "closed": "false", "limit": 200},
     )
     if not data or not isinstance(data, list):
         return None, []
@@ -74,12 +78,14 @@ def discover_btc_5m_markets():
             continue
 
         end_date = row.get("endDate") or row.get("end_date") or ""
-        btc_markets.append({
-            "slug": row.get("slug"),
-            "condition_id": row.get("conditionId"),
-            "question": question,
-            "end_date": end_date,
-        })
+        btc_markets.append(
+            {
+                "slug": row.get("slug"),
+                "condition_id": row.get("conditionId"),
+                "question": question,
+                "end_date": end_date,
+            }
+        )
 
     btc_markets.sort(key=lambda x: x["end_date"] or "", reverse=True)
 
@@ -162,7 +168,13 @@ def fetch_market_traders(conn, condition_id: str):
 
     added = 0
     for row in rows:
-        address = row.get("proxyWallet") or row.get("walletAddress") or row.get("user") or row.get("maker") or row.get("address")
+        address = (
+            row.get("proxyWallet")
+            or row.get("walletAddress")
+            or row.get("user")
+            or row.get("maker")
+            or row.get("address")
+        )
         if not address:
             continue
         upsert_wallet(conn, address=address, source="market_trade")
@@ -281,7 +293,6 @@ def score_wallet(conn, wallet: str, rolling_condition_ids: list[str]):
 
     rolling_pnl = rolling_recent_pnl(wallet, rolling_condition_ids)
 
-    # simple streak proxy: count consecutive current-market trades in same direction/outcome
     if recent_trades:
         first_side = recent_trades[0]["side"]
         first_outcome = recent_trades[0]["outcome"]
@@ -422,7 +433,6 @@ def collector_loop():
             """
         ).fetchall()
 
-        # clear old trades so Recent GOAT Trades is current-market only
         conn.execute("DELETE FROM trades")
 
         for row in wallets:
