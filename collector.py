@@ -11,13 +11,23 @@ from db import get_conn, init_db
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config.json"
 
-GAMMA_API = "https://gamma-api.polymarket.com"
 DATA_API = "https://data-api.polymarket.com"
+GAMMA_API = "https://gamma-api.polymarket.com"
+
+MAX_AGE_MS = 15 * 60 * 1000
+MIN_AVG_SIZE = 10.0
+MIN_RECENT_TRADES = 2
+ROLLING_MARKETS = 18
 
 
 def load_config() -> dict:
     with CONFIG_PATH.open("r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def save_config(cfg: dict):
+    with CONFIG_PATH.open("w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
 
 
 def safe_get_json(url: str, params: dict | None = None):
@@ -44,6 +54,41 @@ def upsert_wallet(conn, address: str, source: str = "leaderboard", name: str | N
     )
 
 
+def looks_like_btc_5m(question: str) -> bool:
+    q = (question or "").lower()
+    return "bitcoin up or down" in q or "btc updown 5m" in q or ("bitcoin" in q and "5" in q and "minute" in q)
+
+
+def discover_btc_5m_markets():
+    data = safe_get_json(
+        f"{GAMMA_API}/markets",
+        params={"active": "true", "closed": "false", "limit": 200}
+    )
+    if not data or not isinstance(data, list):
+        return None, []
+
+    btc_markets = []
+    for row in data:
+        question = row.get("question") or ""
+        if not looks_like_btc_5m(question):
+            continue
+
+        end_date = row.get("endDate") or row.get("end_date") or ""
+        btc_markets.append({
+            "slug": row.get("slug"),
+            "condition_id": row.get("conditionId"),
+            "question": question,
+            "end_date": end_date,
+        })
+
+    btc_markets.sort(key=lambda x: x["end_date"] or "", reverse=True)
+
+    current_market = btc_markets[0] if btc_markets else None
+    rolling = btc_markets[:ROLLING_MARKETS]
+
+    return current_market, rolling
+
+
 def fetch_leaderboard_wallets(conn):
     data = safe_get_json(f"{DATA_API}/v1/leaderboard")
     if not data:
@@ -57,7 +102,7 @@ def fetch_leaderboard_wallets(conn):
         rows = []
 
     added = 0
-    for row in rows[:100]:
+    for row in rows[:30]:
         address = row.get("proxyWallet") or row.get("walletAddress") or row.get("address")
         if not address:
             continue
@@ -100,14 +145,39 @@ def fetch_market_holders(conn, condition_id: str):
     return added
 
 
+def fetch_market_traders(conn, condition_id: str):
+    data = safe_get_json(
+        f"{DATA_API}/trades",
+        params={"market": condition_id, "limit": 200},
+    )
+    if not data:
+        return 0
+
+    if isinstance(data, dict):
+        rows = data.get("history") or data.get("data") or data.get("trades") or []
+    elif isinstance(data, list):
+        rows = data
+    else:
+        rows = []
+
+    added = 0
+    for row in rows:
+        address = row.get("proxyWallet") or row.get("walletAddress") or row.get("user") or row.get("maker") or row.get("address")
+        if not address:
+            continue
+        upsert_wallet(conn, address=address, source="market_trade")
+        added += 1
+    return added
+
+
 def fetch_recent_trades(conn, wallet: str, condition_id: str, limit: int = 20):
     data = safe_get_json(
         f"{DATA_API}/trades",
         params={
             "user": wallet,
             "market": condition_id,
-            "limit": limit
-        }
+            "limit": limit,
+        },
     )
     if not data:
         return []
@@ -132,8 +202,8 @@ def fetch_recent_trades(conn, wallet: str, condition_id: str, limit: int = 20):
         title = row.get("title") or row.get("marketTitle") or row.get("question") or "Unknown market"
         market_slug = row.get("slug") or row.get("marketSlug") or ""
         timestamp = int(row.get("timestamp", 0) or row.get("time", 0) or 0)
-if timestamp and timestamp < 10_000_000_000:
-    timestamp *= 1000
+        if timestamp and timestamp < 10_000_000_000:
+            timestamp *= 1000
 
         conn.execute(
             """
@@ -161,26 +231,34 @@ if timestamp and timestamp < 10_000_000_000:
     return out
 
 
-def fetch_closed_positions(wallet: str, limit: int = 20):
-    data = safe_get_json(f"{DATA_API}/closed-positions", params={"user": wallet})
-    if not data:
-        return []
+def rolling_recent_pnl(wallet: str, rolling_condition_ids: list[str]) -> float:
+    total = 0.0
+    for condition_id in rolling_condition_ids:
+        data = safe_get_json(
+            f"{DATA_API}/trades",
+            params={"user": wallet, "market": condition_id, "limit": 20},
+        )
+        if not data:
+            continue
 
-    if isinstance(data, dict):
-        rows = data.get("data") or data.get("positions") or []
-    elif isinstance(data, list):
-        rows = data
-    else:
-        rows = []
+        if isinstance(data, dict):
+            rows = data.get("history") or data.get("data") or data.get("trades") or []
+        elif isinstance(data, list):
+            rows = data
+        else:
+            rows = []
 
-    return rows[:limit]
+        for row in rows:
+            size = float(row.get("size", 0) or row.get("shares", 0) or 0)
+            price = float(row.get("price", 0) or 0)
+            total += size * price
+    return total
 
 
-def score_wallet(conn, wallet: str):
-    positions = fetch_closed_positions(wallet, limit=20)
+def score_wallet(conn, wallet: str, rolling_condition_ids: list[str]):
     recent_trades = conn.execute(
         """
-        SELECT size, price, timestamp
+        SELECT tx_hash, size, price, timestamp, side, outcome
         FROM trades
         WHERE wallet = ?
         ORDER BY timestamp DESC
@@ -189,40 +267,67 @@ def score_wallet(conn, wallet: str):
         (wallet,),
     ).fetchall()
 
-    recent_pnl = 0.0
-    realized_pnl = 0.0
     wins = 0
     losses = 0
     streak = 0
     avg_size = 0.0
     last_trade_ts = None
-
-    for p in positions:
-        pnl = float(p.get("realizedPnl", 0) or 0)
-        realized_pnl += pnl
-        recent_pnl += pnl
-        if pnl > 0:
-            wins += 1
-            if losses == 0:
-                streak += 1
-        elif pnl < 0:
-            losses += 1
+    recent_trade_count = len(recent_trades)
+    goat_reason = "filtered_out"
 
     if recent_trades:
         avg_size = sum(float(r["size"] or 0) for r in recent_trades) / max(len(recent_trades), 1)
         last_trade_ts = max(int(r["timestamp"] or 0) for r in recent_trades)
 
-    recent_trade_count = len(recent_trades)
-    decisions = wins + losses
-    recent_win_rate = wins / decisions if decisions else 0.0
+    rolling_pnl = rolling_recent_pnl(wallet, rolling_condition_ids)
 
-    goat_score = (
-        (streak * 120.0)
-        + (recent_pnl * 0.02)
-        + (avg_size * 0.15)
-        + (recent_trade_count * 10.0)
-        + (recent_win_rate * 200.0)
+    # simple streak proxy: count consecutive current-market trades in same direction/outcome
+    if recent_trades:
+        first_side = recent_trades[0]["side"]
+        first_outcome = recent_trades[0]["outcome"]
+        for r in recent_trades:
+            if r["side"] == first_side and r["outcome"] == first_outcome:
+                streak += 1
+            else:
+                break
+
+    recent_win_rate = 1.0 if recent_trade_count > 0 else 0.0
+
+    now_ms = int(time.time() * 1000)
+    age_ms = now_ms - last_trade_ts if last_trade_ts else 10**15
+
+    recency_bonus = max(0.0, (MAX_AGE_MS - age_ms) / MAX_AGE_MS) * 600.0
+    size_bonus = min(avg_size, 250.0) * 3.0
+    streak_bonus = streak * 120.0
+    trade_bonus = min(recent_trade_count, 10) * 30.0
+    rolling_bonus = rolling_pnl * 0.02
+    win_bonus = recent_win_rate * 120.0
+
+    penalty = 0.0
+    if avg_size < MIN_AVG_SIZE:
+        penalty += 600.0
+    if recent_trade_count < MIN_RECENT_TRADES:
+        penalty += 500.0
+    if age_ms > MAX_AGE_MS:
+        penalty += 1000.0
+
+    goat_score = recency_bonus + size_bonus + streak_bonus + trade_bonus + rolling_bonus + win_bonus - penalty
+
+    is_goat = int(
+        age_ms <= MAX_AGE_MS
+        and avg_size >= MIN_AVG_SIZE
+        and recent_trade_count >= MIN_RECENT_TRADES
+        and goat_score > 0
     )
+
+    if age_ms > MAX_AGE_MS:
+        goat_reason = "stale"
+    elif avg_size < MIN_AVG_SIZE:
+        goat_reason = "small_size"
+    elif recent_trade_count < MIN_RECENT_TRADES:
+        goat_reason = "too_few_trades"
+    else:
+        goat_reason = "goat"
 
     conn.execute(
         """
@@ -234,18 +339,22 @@ def score_wallet(conn, wallet: str):
             recent_trade_count = ?,
             recent_win_rate = ?,
             realized_pnl = ?,
-            last_trade_ts = ?
+            last_trade_ts = ?,
+            is_goat = ?,
+            goat_reason = ?
         WHERE address = ?
         """,
         (
             goat_score,
             streak,
-            recent_pnl,
+            rolling_pnl,
             avg_size,
             recent_trade_count,
             recent_win_rate,
-            realized_pnl,
+            rolling_pnl,
             last_trade_ts,
+            is_goat,
+            goat_reason,
             wallet,
         ),
     )
@@ -256,44 +365,70 @@ def mark_elite_wallet_trades(conn):
         """
         SELECT address
         FROM wallets
-        WHERE score > 500
+        WHERE is_goat = 1
         ORDER BY score DESC
         LIMIT 20
         """
     ).fetchall()
 
     elite_set = {row["address"] for row in elite_wallets}
+    conn.execute("UPDATE trades SET is_elite = 0")
     for wallet in elite_set:
         conn.execute("UPDATE trades SET is_elite = 1 WHERE wallet = ?", (wallet,))
 
 
 def collector_loop():
-    config = load_config()
-    condition_id = config["market"]["condition_id"]
-    poll_seconds = int(config.get("poll_seconds", 15))
+    cfg = load_config()
+    poll_seconds = int(cfg.get("poll_seconds", 15))
 
     init_db()
 
     while True:
         print("Collector tick...")
+
+        current_market, rolling_markets = discover_btc_5m_markets()
+        if not current_market:
+            print("No active BTC 5m markets found.")
+            time.sleep(poll_seconds)
+            continue
+
+        cfg["market"]["slug"] = current_market["slug"]
+        cfg["market"]["condition_id"] = current_market["condition_id"]
+        cfg["market"]["rolling_count"] = len(rolling_markets)
+        save_config(cfg)
+
+        current_condition_id = current_market["condition_id"]
+        rolling_condition_ids = [m["condition_id"] for m in rolling_markets if m.get("condition_id")]
+
         conn = get_conn()
 
-        lb_added = fetch_leaderboard_wallets(conn)
-        holders_added = fetch_market_holders(conn, condition_id)
+        traders_added = fetch_market_traders(conn, current_condition_id)
+        holders_added = fetch_market_holders(conn, current_condition_id)
+        leaderboard_added = fetch_leaderboard_wallets(conn)
 
         wallets = conn.execute(
             """
             SELECT address
             FROM wallets
-            ORDER BY source DESC, address ASC
-            LIMIT 50
+            ORDER BY
+                CASE source
+                    WHEN 'market_trade' THEN 1
+                    WHEN 'holders' THEN 2
+                    WHEN 'leaderboard' THEN 3
+                    ELSE 4
+                END,
+                address ASC
+            LIMIT 100
             """
         ).fetchall()
 
+        # clear old trades so Recent GOAT Trades is current-market only
+        conn.execute("DELETE FROM trades")
+
         for row in wallets:
             wallet = row["address"]
-            fetch_recent_trades(conn, wallet, condition_id, limit=20)
-            score_wallet(conn, wallet)
+            fetch_recent_trades(conn, wallet, current_condition_id, limit=20)
+            score_wallet(conn, wallet, rolling_condition_ids)
 
         mark_elite_wallet_trades(conn)
 
@@ -309,7 +444,10 @@ def collector_loop():
         conn.commit()
         conn.close()
 
-        print(f"Done. leaderboard={lb_added} holders={holders_added} wallets_scored={len(wallets)}")
+        print(
+            f"Done. current_slug={current_market['slug']} rolling={len(rolling_markets)} "
+            f"market_traders={traders_added} holders={holders_added} leaderboard={leaderboard_added}"
+        )
         time.sleep(poll_seconds)
 
 
