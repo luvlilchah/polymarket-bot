@@ -2,9 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="refresh" content="5">
+  <meta http-equiv="refresh" content="15">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{{ wallet["display_name"] }} - {{ config.site_name }}</title>
+  <title>{{ wallet["display_name"] }} — {{ config.site_name }}</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -54,9 +54,16 @@
       font-size: 11px;
       margin-left: 8px;
     }
-    .muted {
-      color: #95a3b5;
+    .win-badge {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 2px 7px;
+      font-size: 11px;
+      margin-left: 4px;
     }
+    .win-badge.win  { background: #0e2a18; color: #4ee06f; border: 1px solid #1e5c30; }
+    .win-badge.loss { background: #2a100e; color: #ff6b6b; border: 1px solid #5c1e1e; }
+    .muted { color: #95a3b5; }
     .mono {
       font-family: Consolas, Monaco, monospace;
       font-size: 12px;
@@ -72,9 +79,7 @@
       color: #7db7ff;
       text-decoration: none;
     }
-    .links a:hover, .back-link:hover {
-      text-decoration: underline;
-    }
+    .links a:hover, .back-link:hover { text-decoration: underline; }
     .stats {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -93,18 +98,9 @@
       color: #9bb0cc;
       margin-bottom: 8px;
     }
-    .stat-value {
-      font-size: 22px;
-      font-weight: 700;
-    }
-    .green {
-      color: #4ee06f;
-      font-weight: 700;
-    }
-    .red {
-      color: #ff6b6b;
-      font-weight: 700;
-    }
+    .stat-value { font-size: 22px; font-weight: 700; }
+    .green { color: #4ee06f; font-weight: 700; }
+    .red   { color: #ff6b6b; font-weight: 700; }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -123,20 +119,11 @@
       letter-spacing: 0.05em;
       text-transform: uppercase;
     }
-    tr:hover {
-      background: #182131;
-    }
-    .market-title {
-      max-width: 380px;
-      line-height: 1.25;
-    }
+    tr:hover { background: #182131; }
+    .market-title { max-width: 380px; line-height: 1.25; }
     @media (max-width: 900px) {
-      .stats {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-      }
-      table {
-        font-size: 12px;
-      }
+      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      table { font-size: 12px; }
     }
   </style>
 </head>
@@ -156,11 +143,11 @@
           <a href="{{ polymarket_profile_url(wallet['address']) }}" target="_blank">Open Polymarket profile</a>
         </div>
         <div style="margin-top:8px;">
-          <span class="pill">Reason: {{ wallet["goat_reason"] }}</span>
-          <span class="pill">Last trade: {{ ts_to_iso(wallet["last_trade_ts"]) }}</span>
+          <span class="pill">Reason: {{ wallet["goat_reason"] or "—" }}</span>
+          <span class="pill">Last trade: {{ wallet["last_trade_ts"] | ts_to_iso }}</span>
         </div>
       </div>
-      <div class="muted">Auto-refresh every 5 seconds</div>
+      <div class="muted">Auto-refresh every 15 seconds</div>
     </div>
 
     <div class="card">
@@ -171,7 +158,9 @@
         </div>
         <div class="stat-box">
           <div class="stat-label">Current Streak</div>
-          <div class="stat-value green">{{ wallet["current_streak"] or 0 }}</div>
+          <div class="stat-value {% if (wallet['current_streak'] or 0) >= 0 %}green{% else %}red{% endif %}">
+            {{ wallet["current_streak"] or 0 }}
+          </div>
         </div>
         <div class="stat-box">
           <div class="stat-label">Recent PnL</div>
@@ -188,8 +177,10 @@
           <div class="stat-value">{{ wallet["recent_trade_count"] or 0 }}</div>
         </div>
         <div class="stat-box">
-          <div class="stat-label">Recent Win Rate</div>
-          <div class="stat-value">{{ "%.2f"|format((wallet["recent_win_rate"] or 0) * 100) }}%</div>
+          <div class="stat-label">Win Rate</div>
+          <div class="stat-value {% if (wallet['recent_win_rate'] or 0) >= 0.5 %}green{% else %}red{% endif %}">
+            {{ "%.1f"|format((wallet["recent_win_rate"] or 0) * 100) }}%
+          </div>
         </div>
         <div class="stat-box">
           <div class="stat-label">Realized PnL</div>
@@ -209,10 +200,12 @@
       <table>
         <thead>
           <tr>
+            <th>Result</th>
             <th>Side</th>
             <th>Outcome</th>
             <th>Size</th>
             <th>Price</th>
+            <th>PnL</th>
             <th>Market</th>
             <th>Time</th>
             <th>Tx</th>
@@ -221,17 +214,36 @@
         <tbody>
           {% for t in trades %}
           <tr>
+            <td>
+              {% if t["is_win"] == 1 %}
+                <span class="win-badge win">W</span>
+              {% elif t["is_win"] == 0 %}
+                <span class="win-badge loss">L</span>
+              {% else %}
+                <span class="muted">—</span>
+              {% endif %}
+              {% if t["is_elite"] %}
+                <span class="elite-badge">GOAT</span>
+              {% endif %}
+            </td>
             <td>{{ t["side"] }}</td>
             <td>{{ t["outcome"] }}</td>
             <td>{{ "%.2f"|format(t["size"] or 0) }}</td>
             <td>{{ "%.4f"|format(t["price"] or 0) }}</td>
+            <td class="{% if (t['resolved_pnl'] or 0) > 0 %}green{% elif (t['resolved_pnl'] or 0) < 0 %}red{% else %}muted{% endif %}">
+              {% if t["resolved_pnl"] %}
+                {{ "%.2f"|format(t["resolved_pnl"]) }}
+              {% else %}
+                —
+              {% endif %}
+            </td>
             <td class="market-title">{{ t["title"] }}</td>
-            <td>{{ ts_to_iso(t["timestamp"]) }}</td>
-            <td class="mono">{{ t["tx_hash"] }}</td>
+            <td>{{ t["timestamp"] | ts_to_iso }}</td>
+            <td class="mono">{{ t["tx_hash"][:12] }}...</td>
           </tr>
           {% else %}
           <tr>
-            <td colspan="7" class="muted">No trades found for this wallet yet.</td>
+            <td colspan="9" class="muted">No trades found for this wallet yet.</td>
           </tr>
           {% endfor %}
         </tbody>
