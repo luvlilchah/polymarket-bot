@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template
+from flask import Flask, abort, jsonify, render_template
 
 from db import get_conn, init_db
 
@@ -25,6 +25,10 @@ def ts_to_iso(ms: int | None) -> str:
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def polymarket_profile_url(address: str) -> str:
+    return f"https://polymarket.com/@{address}"
+
+
 @app.route("/")
 def index():
     config = load_config()
@@ -32,21 +36,24 @@ def index():
 
     wallets = conn.execute(
         """
-        SELECT address, COALESCE(name, pseudonym, substr(address,1,10) || '...') AS display_name,
+        SELECT address,
+               COALESCE(name, pseudonym, substr(address,1,10) || '...') AS display_name,
                score, current_streak, recent_pnl, avg_size, recent_trade_count,
-               recent_win_rate, realized_pnl, last_trade_ts
+               recent_win_rate, realized_pnl, last_trade_ts, is_goat, goat_reason
         FROM wallets
-        WHERE score > 0
-        ORDER BY score DESC, recent_trade_count DESC, avg_size DESC
+        WHERE is_goat = 1
+        ORDER BY score DESC, last_trade_ts DESC
         LIMIT 25
         """
     ).fetchall()
 
     recent_trades = conn.execute(
         """
-        SELECT tx_hash, wallet, side, outcome, size, price, title, timestamp, is_elite
-        FROM trades
-        ORDER BY timestamp DESC
+        SELECT t.tx_hash, t.wallet, t.side, t.outcome, t.size, t.price, t.title, t.timestamp, t.is_elite
+        FROM trades t
+        JOIN wallets w ON w.address = t.wallet
+        WHERE w.is_goat = 1
+        ORDER BY t.timestamp DESC
         LIMIT 40
         """
     ).fetchall()
@@ -61,6 +68,51 @@ def index():
         recent_trades=recent_trades,
         ts_to_iso=ts_to_iso,
         last_run=ts_to_iso(int(last_run[0])) if last_run else "—",
+        polymarket_profile_url=polymarket_profile_url,
+    )
+
+
+@app.route("/wallet/<address>")
+def wallet_detail(address: str):
+    config = load_config()
+    conn = get_conn()
+
+    wallet = conn.execute(
+        """
+        SELECT address,
+               COALESCE(name, pseudonym, substr(address,1,10) || '...') AS display_name,
+               score, current_streak, recent_pnl, avg_size, recent_trade_count,
+               recent_win_rate, realized_pnl, last_trade_ts, is_goat, goat_reason
+        FROM wallets
+        WHERE address = ?
+        """,
+        (address,),
+    ).fetchone()
+
+    if not wallet:
+        conn.close()
+        abort(404)
+
+    trades = conn.execute(
+        """
+        SELECT tx_hash, wallet, side, outcome, size, price, title, timestamp, is_elite
+        FROM trades
+        WHERE wallet = ?
+        ORDER BY timestamp DESC
+        LIMIT 50
+        """,
+        (address,),
+    ).fetchall()
+
+    conn.close()
+
+    return render_template(
+        "wallet.html",
+        config=config,
+        wallet=wallet,
+        trades=trades,
+        ts_to_iso=ts_to_iso,
+        polymarket_profile_url=polymarket_profile_url,
     )
 
 
@@ -72,14 +124,15 @@ def api_leaderboard():
         SELECT address,
                COALESCE(name, pseudonym, substr(address,1,10) || '...') AS display_name,
                score, current_streak, recent_pnl, avg_size, recent_trade_count,
-               recent_win_rate, realized_pnl, last_trade_ts
+               recent_win_rate, realized_pnl, last_trade_ts, goat_reason
         FROM wallets
-        WHERE score > 0
-        ORDER BY score DESC, recent_trade_count DESC, avg_size DESC
+        WHERE is_goat = 1
+        ORDER BY score DESC, last_trade_ts DESC
         LIMIT 25
         """
     ).fetchall()
     conn.close()
+
     payload = []
     for r in rows:
         payload.append({
@@ -94,6 +147,9 @@ def api_leaderboard():
             "realized_pnl": r["realized_pnl"],
             "last_trade_ts": r["last_trade_ts"],
             "last_trade_iso": ts_to_iso(r["last_trade_ts"]),
+            "goat_reason": r["goat_reason"],
+            "profile_url": polymarket_profile_url(r["address"]),
+            "detail_url": f"/wallet/{r['address']}",
         })
     return jsonify(payload)
 
@@ -103,13 +159,16 @@ def api_recent_trades():
     conn = get_conn()
     rows = conn.execute(
         """
-        SELECT tx_hash, wallet, side, outcome, size, price, title, timestamp, is_elite
-        FROM trades
-        ORDER BY timestamp DESC
+        SELECT t.tx_hash, t.wallet, t.side, t.outcome, t.size, t.price, t.title, t.timestamp, t.is_elite
+        FROM trades t
+        JOIN wallets w ON w.address = t.wallet
+        WHERE w.is_goat = 1
+        ORDER BY t.timestamp DESC
         LIMIT 50
         """
     ).fetchall()
     conn.close()
+
     payload = []
     for r in rows:
         payload.append({
@@ -123,6 +182,8 @@ def api_recent_trades():
             "timestamp": r["timestamp"],
             "timestamp_iso": ts_to_iso(r["timestamp"]),
             "is_elite": bool(r["is_elite"]),
+            "profile_url": polymarket_profile_url(r["wallet"]),
+            "detail_url": f"/wallet/{r['wallet']}",
         })
     return jsonify(payload)
 
