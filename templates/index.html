@@ -8,34 +8,67 @@
   <style>
     body {
       font-family: Arial, sans-serif;
-      background: #0f1115;
+      background: #0b0f17;
       color: #f5f7fa;
       margin: 0;
       padding: 0;
     }
     .wrap {
-      max-width: 1400px;
+      max-width: 1450px;
       margin: 0 auto;
-      padding: 24px;
+      padding: 22px;
     }
     h1, h2 {
-      margin: 0 0 16px 0;
+      margin: 0 0 14px 0;
     }
     .sub {
-      color: #aab3c2;
-      margin-bottom: 24px;
+      color: #9aa7b8;
+      margin-bottom: 18px;
+    }
+    .notice {
+      background: #101827;
+      border: 1px solid #22314a;
+      color: #d9e7ff;
+      border-radius: 12px;
+      padding: 12px 14px;
+      margin-bottom: 18px;
+      font-size: 13px;
     }
     .grid {
       display: grid;
       grid-template-columns: 1.2fr 1fr;
-      gap: 20px;
+      gap: 18px;
     }
     .card {
-      background: #171b22;
-      border: 1px solid #232a35;
-      border-radius: 14px;
+      background: #121925;
+      border: 1px solid #1f2a3b;
+      border-radius: 16px;
       padding: 18px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+      box-shadow: 0 6px 24px rgba(0,0,0,0.22);
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .pill {
+      display: inline-block;
+      background: #1c2637;
+      color: #d8e2f0;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      margin-right: 6px;
+      margin-top: 6px;
+    }
+    .muted {
+      color: #95a3b5;
+    }
+    .small {
+      font-size: 12px;
     }
     table {
       width: 100%;
@@ -43,66 +76,85 @@
       font-size: 14px;
     }
     th, td {
-      padding: 10px 8px;
-      border-bottom: 1px solid #232a35;
       text-align: left;
+      padding: 11px 8px;
+      border-bottom: 1px solid #1f2a3b;
       vertical-align: top;
     }
     th {
-      color: #9fb0c7;
-      font-weight: 600;
+      color: #9bb0cc;
+      font-weight: 700;
       font-size: 12px;
+      letter-spacing: 0.05em;
       text-transform: uppercase;
-      letter-spacing: 0.04em;
     }
     tr:hover {
-      background: #1d2330;
+      background: #182131;
+    }
+    .rank {
+      color: #ffffff;
+      font-weight: 700;
+    }
+    .wallet-main {
+      font-weight: 700;
+      color: #ffd766;
+      text-decoration: none;
+    }
+    .wallet-main:hover {
+      text-decoration: underline;
+    }
+    .wallet-sub {
+      display: block;
+      font-family: Consolas, Monaco, monospace;
+      font-size: 12px;
+      color: #8ea0ba;
+      margin-top: 3px;
+      word-break: break-all;
+    }
+    .green {
+      color: #4ee06f;
+      font-weight: 700;
+    }
+    .red {
+      color: #ff6b6b;
+      font-weight: 700;
+    }
+    .link-btn {
+      display: inline-block;
+      margin-top: 6px;
+      margin-right: 8px;
+      font-size: 12px;
+      color: #7db7ff;
+      text-decoration: none;
+    }
+    .link-btn:hover {
+      text-decoration: underline;
+    }
+    .goat-reason {
+      font-size: 11px;
+      color: #8ea0ba;
+      margin-top: 4px;
+    }
+    .elite-badge {
+      display: inline-block;
+      background: #2a2110;
+      color: #ffd766;
+      border: 1px solid #6a5621;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+      margin-left: 6px;
+    }
+    .market-title {
+      max-width: 230px;
+      line-height: 1.25;
     }
     .mono {
       font-family: Consolas, Monaco, monospace;
       font-size: 12px;
+      word-break: break-all;
     }
-    .elite {
-      color: #ffd54a;
-      font-weight: 700;
-    }
-    .pill {
-      display: inline-block;
-      padding: 4px 8px;
-      border-radius: 999px;
-      background: #222a36;
-      color: #d9e2f2;
-      font-size: 12px;
-      margin-right: 6px;
-    }
-    .good {
-      color: #56d364;
-      font-weight: 600;
-    }
-    .muted {
-      color: #94a0b4;
-    }
-    .small {
-      font-size: 12px;
-    }
-    .topbar {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 20px;
-      flex-wrap: wrap;
-    }
-    .notice {
-      background: #101722;
-      border: 1px solid #243247;
-      border-radius: 10px;
-      padding: 10px 12px;
-      color: #cfe1ff;
-      margin-bottom: 18px;
-      font-size: 13px;
-    }
-    @media (max-width: 1000px) {
+    @media (max-width: 1050px) {
       .grid {
         grid-template-columns: 1fr;
       }
@@ -118,8 +170,9 @@
       <div>
         <h1>{{ config.site_name }}</h1>
         <div class="sub">
-          Market: <span class="pill">{{ config.market.slug }}</span>
-          Last refresh: <span class="pill">{{ last_run }}</span>
+          <span class="pill">Market: {{ config.market.slug }}</span>
+          <span class="pill">Last refresh: {{ last_run }}</span>
+          <span class="pill">GOAT only</span>
         </div>
       </div>
       <div class="small muted">
@@ -128,8 +181,7 @@
     </div>
 
     <div class="notice">
-      This is Phase 1: a live-updating dashboard for GOAT wallets and recent trades.
-      Browser notifications trigger when a new elite-wallet trade appears while this page is open.
+      GOAT board now hides stale / tiny-trade wallets. Recent Trades shows only trades from wallets currently on the GOAT board. Browser notifications fire when a new GOAT trade appears while this page is open.
     </div>
 
     <div class="grid">
@@ -152,18 +204,31 @@
           <tbody>
             {% for w in wallets %}
             <tr>
-              <td>{{ loop.index }}</td>
+              <td class="rank">{{ loop.index }}</td>
               <td>
-                <div {% if loop.index <= 5 %}class="elite"{% endif %}>{{ w["display_name"] }}</div>
-                <div class="mono muted">{{ w["address"] }}</div>
+                <a class="wallet-main" href="/wallet/{{ w['address'] }}">{{ w["display_name"] }}</a>
+                {% if loop.index <= 5 %}
+                  <span class="elite-badge">GOAT</span>
+                {% endif %}
+                <span class="wallet-sub">{{ w["address"] }}</span>
+                <a class="link-btn" href="{{ polymarket_profile_url(w['address']) }}" target="_blank">Open Polymarket</a>
               </td>
               <td>{{ "%.2f"|format(w["score"] or 0) }}</td>
-              <td class="good">{{ w["current_streak"] or 0 }}</td>
-              <td>{{ "%.2f"|format(w["recent_pnl"] or 0) }}</td>
+              <td class="green">{{ w["current_streak"] or 0 }}</td>
+              <td class="{% if (w['recent_pnl'] or 0) >= 0 %}green{% else %}red{% endif %}">
+                {{ "%.2f"|format(w["recent_pnl"] or 0) }}
+              </td>
               <td>{{ "%.2f"|format(w["avg_size"] or 0) }}</td>
               <td>{{ "%.2f"|format((w["recent_win_rate"] or 0) * 100) }}%</td>
               <td>{{ w["recent_trade_count"] or 0 }}</td>
-              <td>{{ ts_to_iso(w["last_trade_ts"]) }}</td>
+              <td>
+                {{ ts_to_iso(w["last_trade_ts"]) }}
+                <div class="goat-reason">{{ w["goat_reason"] }}</div>
+              </td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="9" class="muted">No GOAT wallets yet.</td>
             </tr>
             {% endfor %}
           </tbody>
@@ -171,7 +236,7 @@
       </div>
 
       <div class="card">
-        <h2>Recent Trades</h2>
+        <h2>Recent GOAT Trades</h2>
         <table>
           <thead>
             <tr>
@@ -187,13 +252,23 @@
           <tbody id="recent-trades-body">
             {% for t in recent_trades %}
             <tr data-tx="{{ t['tx_hash'] }}">
-              <td class="{% if t['is_elite'] %}elite{% endif %} mono">{{ t["wallet"] }}</td>
+              <td>
+                <a class="wallet-main mono" href="/wallet/{{ t['wallet'] }}">{{ t["wallet"] }}</a>
+                {% if t["is_elite"] %}
+                  <span class="elite-badge">GOAT</span>
+                {% endif %}
+                <a class="link-btn" href="{{ polymarket_profile_url(t['wallet']) }}" target="_blank">Profile</a>
+              </td>
               <td>{{ t["side"] }}</td>
               <td>{{ t["outcome"] }}</td>
               <td>{{ "%.2f"|format(t["size"] or 0) }}</td>
               <td>{{ "%.4f"|format(t["price"] or 0) }}</td>
-              <td>{{ t["title"] }}</td>
+              <td class="market-title">{{ t["title"] }}</td>
               <td>{{ ts_to_iso(t["timestamp"]) }}</td>
+            </tr>
+            {% else %}
+            <tr>
+              <td colspan="7" class="muted">No GOAT trades yet.</td>
             </tr>
             {% endfor %}
           </tbody>
@@ -232,7 +307,7 @@
             seenTrades.add(trade.tx_hash);
 
             if (trade.is_elite && "Notification" in window && Notification.permission === "granted") {
-              new Notification("Elite wallet trade detected", {
+              new Notification("GOAT wallet trade detected", {
                 body: `${trade.wallet.slice(0, 10)}... ${trade.side} ${trade.outcome} | ${trade.title}`
               });
             }
