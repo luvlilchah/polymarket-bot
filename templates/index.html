@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="refresh" content="5">
+  <meta http-equiv="refresh" content="15">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{{ config.site_name }}</title>
   <style>
@@ -64,12 +64,8 @@
       margin-right: 6px;
       margin-top: 6px;
     }
-    .muted {
-      color: #95a3b5;
-    }
-    .small {
-      font-size: 12px;
-    }
+    .muted { color: #95a3b5; }
+    .small { font-size: 12px; }
     table {
       width: 100%;
       border-collapse: collapse;
@@ -88,21 +84,14 @@
       letter-spacing: 0.05em;
       text-transform: uppercase;
     }
-    tr:hover {
-      background: #182131;
-    }
-    .rank {
-      color: #ffffff;
-      font-weight: 700;
-    }
+    tr:hover { background: #182131; }
+    .rank { color: #ffffff; font-weight: 700; }
     .wallet-main {
       font-weight: 700;
       color: #ffd766;
       text-decoration: none;
     }
-    .wallet-main:hover {
-      text-decoration: underline;
-    }
+    .wallet-main:hover { text-decoration: underline; }
     .wallet-sub {
       display: block;
       font-family: Consolas, Monaco, monospace;
@@ -111,14 +100,8 @@
       margin-top: 3px;
       word-break: break-all;
     }
-    .green {
-      color: #4ee06f;
-      font-weight: 700;
-    }
-    .red {
-      color: #ff6b6b;
-      font-weight: 700;
-    }
+    .green { color: #4ee06f; font-weight: 700; }
+    .red   { color: #ff6b6b; font-weight: 700; }
     .link-btn {
       display: inline-block;
       margin-top: 6px;
@@ -127,14 +110,8 @@
       color: #7db7ff;
       text-decoration: none;
     }
-    .link-btn:hover {
-      text-decoration: underline;
-    }
-    .goat-reason {
-      font-size: 11px;
-      color: #8ea0ba;
-      margin-top: 4px;
-    }
+    .link-btn:hover { text-decoration: underline; }
+    .goat-reason { font-size: 11px; color: #8ea0ba; margin-top: 4px; }
     .elite-badge {
       display: inline-block;
       background: #2a2110;
@@ -145,22 +122,24 @@
       font-size: 11px;
       margin-left: 6px;
     }
-    .market-title {
-      max-width: 230px;
-      line-height: 1.25;
+    .win-badge {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 2px 7px;
+      font-size: 11px;
+      margin-left: 4px;
     }
+    .win-badge.win  { background: #0e2a18; color: #4ee06f; border: 1px solid #1e5c30; }
+    .win-badge.loss { background: #2a100e; color: #ff6b6b; border: 1px solid #5c1e1e; }
+    .market-title { max-width: 230px; line-height: 1.25; }
     .mono {
       font-family: Consolas, Monaco, monospace;
       font-size: 12px;
       word-break: break-all;
     }
     @media (max-width: 1050px) {
-      .grid {
-        grid-template-columns: 1fr;
-      }
-      table {
-        font-size: 12px;
-      }
+      .grid { grid-template-columns: 1fr; }
+      table { font-size: 12px; }
     }
   </style>
 </head>
@@ -170,21 +149,22 @@
       <div>
         <h1>{{ config.site_name }}</h1>
         <div class="sub">
-          <span class="pill">Market: {{ config.market.slug }}</span>
+          <span class="pill">Market: {{ current_market_slug }}</span>
+          <span class="pill">Rolling: {{ rolling_count }}</span>
           <span class="pill">Last refresh: {{ last_run }}</span>
           <span class="pill">GOAT only</span>
         </div>
       </div>
-      <div class="small muted">
-        Auto-refresh every {{ config.poll_seconds }} seconds
-      </div>
+      <div class="small muted">Auto-refresh every 15 seconds</div>
     </div>
 
     <div class="notice">
-      GOAT board now hides stale / tiny-trade wallets. Recent Trades shows only trades from wallets currently on the GOAT board. Browser notifications fire when a new GOAT trade appears while this page is open.
+      GOAT board hides stale / tiny-trade wallets. Recent Trades shows only trades from current GOAT wallets.
+      Browser notifications fire when a new elite trade appears while this page is open.
     </div>
 
     <div class="grid">
+      <!-- GOAT leaderboard -->
       <div class="card">
         <h2>GOAT Now</h2>
         <table>
@@ -214,15 +194,17 @@
                 <a class="link-btn" href="{{ polymarket_profile_url(w['address']) }}" target="_blank">Open Polymarket</a>
               </td>
               <td>{{ "%.2f"|format(w["score"] or 0) }}</td>
-              <td class="green">{{ w["current_streak"] or 0 }}</td>
+              <td class="{% if (w['current_streak'] or 0) >= 0 %}green{% else %}red{% endif %}">
+                {{ w["current_streak"] or 0 }}
+              </td>
               <td class="{% if (w['recent_pnl'] or 0) >= 0 %}green{% else %}red{% endif %}">
                 {{ "%.2f"|format(w["recent_pnl"] or 0) }}
               </td>
               <td>{{ "%.2f"|format(w["avg_size"] or 0) }}</td>
-              <td>{{ "%.2f"|format((w["recent_win_rate"] or 0) * 100) }}%</td>
+              <td>{{ "%.1f"|format((w["recent_win_rate"] or 0) * 100) }}%</td>
               <td>{{ w["recent_trade_count"] or 0 }}</td>
               <td>
-                {{ ts_to_iso(w["last_trade_ts"]) }}
+                {{ w["last_trade_ts"] | ts_to_iso }}
                 <div class="goat-reason">{{ w["goat_reason"] }}</div>
               </td>
             </tr>
@@ -235,6 +217,7 @@
         </table>
       </div>
 
+      <!-- Recent GOAT trades -->
       <div class="card">
         <h2>Recent GOAT Trades</h2>
         <table>
@@ -253,9 +236,14 @@
             {% for t in recent_trades %}
             <tr data-tx="{{ t['tx_hash'] }}">
               <td>
-                <a class="wallet-main mono" href="/wallet/{{ t['wallet'] }}">{{ t["wallet"] }}</a>
+                <a class="wallet-main mono" href="/wallet/{{ t['wallet'] }}">{{ t["display_name"] }}</a>
                 {% if t["is_elite"] %}
                   <span class="elite-badge">GOAT</span>
+                {% endif %}
+                {% if t["is_win"] == 1 %}
+                  <span class="win-badge win">W</span>
+                {% elif t["is_win"] == 0 %}
+                  <span class="win-badge loss">L</span>
                 {% endif %}
                 <a class="link-btn" href="{{ polymarket_profile_url(t['wallet']) }}" target="_blank">Profile</a>
               </td>
@@ -264,7 +252,7 @@
               <td>{{ "%.2f"|format(t["size"] or 0) }}</td>
               <td>{{ "%.4f"|format(t["price"] or 0) }}</td>
               <td class="market-title">{{ t["title"] }}</td>
-              <td>{{ ts_to_iso(t["timestamp"]) }}</td>
+              <td>{{ t["timestamp"] | ts_to_iso }}</td>
             </tr>
             {% else %}
             <tr>
@@ -278,49 +266,45 @@
   </div>
 
   <script>
-    let seenTrades = new Set();
+    const seenTrades = new Set();
 
     function hydrateSeenTrades() {
-      const rows = document.querySelectorAll("#recent-trades-body tr");
-      rows.forEach(row => {
-        const tx = row.getAttribute("data-tx");
-        if (tx) seenTrades.add(tx);
+      document.querySelectorAll("#recent-trades-body tr[data-tx]").forEach(row => {
+        seenTrades.add(row.getAttribute("data-tx"));
       });
     }
 
     async function maybeEnableNotifications() {
       if (!("Notification" in window)) return;
       if (Notification.permission === "default") {
-        try {
-          await Notification.requestPermission();
-        } catch (e) {}
+        try { await Notification.requestPermission(); } catch (e) {}
       }
     }
 
-    async function pollRecentTrades() {
+    async function pollEliteTrades() {
       try {
-        const res = await fetch("/api/recent-trades");
-        const data = await res.json();
+        const res = await fetch("/api/elite-trades");
+        if (!res.ok) return;
+        const trades = await res.json();
 
-        for (const trade of data) {
-          if (!seenTrades.has(trade.tx_hash)) {
-            seenTrades.add(trade.tx_hash);
+        for (const trade of trades) {
+          if (seenTrades.has(trade.tx_hash)) continue;
+          seenTrades.add(trade.tx_hash);
 
-            if (trade.is_elite && "Notification" in window && Notification.permission === "granted") {
-              new Notification("GOAT wallet trade detected", {
-                body: `${trade.wallet.slice(0, 10)}... ${trade.side} ${trade.outcome} | ${trade.title}`
-              });
-            }
+          if ("Notification" in window && Notification.permission === "granted") {
+            new Notification("GOAT trade detected", {
+              body: `${trade.display_name} ${trade.side} ${trade.outcome} $${trade.size.toFixed(2)} | ${trade.title}`,
+            });
           }
         }
       } catch (e) {
-        console.log("recent trade poll failed", e);
+        console.warn("Elite trade poll failed", e);
       }
     }
 
     hydrateSeenTrades();
     maybeEnableNotifications();
-    setInterval(pollRecentTrades, 5000);
+    setInterval(pollEliteTrades, 5000);
   </script>
 </body>
 </html>
