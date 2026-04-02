@@ -69,6 +69,8 @@ def index():
         ts_to_iso=ts_to_iso,
         last_run=ts_to_iso(int(last_run[0])) if last_run else "—",
         polymarket_profile_url=polymarket_profile_url,
+        current_market_slug=config.get("market", {}).get("slug", "—"),
+        rolling_count=config.get("market", {}).get("rolling_count", 0),
     )
 
 
