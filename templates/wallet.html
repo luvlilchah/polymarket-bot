@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="refresh" content="5">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ wallet["display_name"] }} - {{ config.site_name }}</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #0b0f17;
+      color: #f5f7fa;
+      margin: 0;
+      padding: 0;
+    }
+    .wrap {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 22px;
+    }
+    .topbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      flex-wrap: wrap;
+      margin-bottom: 18px;
+    }
+    .card {
+      background: #121925;
+      border: 1px solid #1f2a3b;
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: 0 6px 24px rgba(0,0,0,0.22);
+      margin-bottom: 18px;
+    }
+    .pill {
+      display: inline-block;
+      background: #1c2637;
+      color: #d8e2f0;
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      margin-right: 6px;
+      margin-top: 6px;
+    }
+    .elite-badge {
+      display: inline-block;
+      background: #2a2110;
+      color: #ffd766;
+      border: 1px solid #6a5621;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+      margin-left: 8px;
+    }
+    .muted {
+      color: #95a3b5;
+    }
+    .mono {
+      font-family: Consolas, Monaco, monospace;
+      font-size: 12px;
+      word-break: break-all;
+    }
+    .wallet-name {
+      color: #ffd766;
+      font-weight: 700;
+      font-size: 28px;
+      margin: 0;
+    }
+    .links a, .back-link {
+      color: #7db7ff;
+      text-decoration: none;
+    }
+    .links a:hover, .back-link:hover {
+      text-decoration: underline;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .stat-box {
+      background: #0f1622;
+      border: 1px solid #233047;
+      border-radius: 12px;
+      padding: 14px;
+    }
+    .stat-label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: #9bb0cc;
+      margin-bottom: 8px;
+    }
+    .stat-value {
+      font-size: 22px;
+      font-weight: 700;
+    }
+    .green {
+      color: #4ee06f;
+      font-weight: 700;
+    }
+    .red {
+      color: #ff6b6b;
+      font-weight: 700;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      text-align: left;
+      padding: 11px 8px;
+      border-bottom: 1px solid #1f2a3b;
+      vertical-align: top;
+    }
+    th {
+      color: #9bb0cc;
+      font-weight: 700;
+      font-size: 12px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    tr:hover {
+      background: #182131;
+    }
+    .market-title {
+      max-width: 380px;
+      line-height: 1.25;
+    }
+    @media (max-width: 900px) {
+      .stats {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      table {
+        font-size: 12px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div>
+        <a class="back-link" href="/">← Back to GOAT board</a>
+        <h1 class="wallet-name">
+          {{ wallet["display_name"] }}
+          {% if wallet["is_goat"] %}
+            <span class="elite-badge">GOAT</span>
+          {% endif %}
+        </h1>
+        <div class="mono muted">{{ wallet["address"] }}</div>
+        <div class="links" style="margin-top:8px;">
+          <a href="{{ polymarket_profile_url(wallet['address']) }}" target="_blank">Open Polymarket profile</a>
+        </div>
+        <div style="margin-top:8px;">
+          <span class="pill">Reason: {{ wallet["goat_reason"] }}</span>
+          <span class="pill">Last trade: {{ ts_to_iso(wallet["last_trade_ts"]) }}</span>
+        </div>
+      </div>
+      <div class="muted">Auto-refresh every 5 seconds</div>
+    </div>
+
+    <div class="card">
+      <div class="stats">
+        <div class="stat-box">
+          <div class="stat-label">GOAT Score</div>
+          <div class="stat-value">{{ "%.2f"|format(wallet["score"] or 0) }}</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Current Streak</div>
+          <div class="stat-value green">{{ wallet["current_streak"] or 0 }}</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Recent PnL</div>
+          <div class="stat-value {% if (wallet['recent_pnl'] or 0) >= 0 %}green{% else %}red{% endif %}">
+            {{ "%.2f"|format(wallet["recent_pnl"] or 0) }}
+          </div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Avg Size</div>
+          <div class="stat-value">{{ "%.2f"|format(wallet["avg_size"] or 0) }}</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Recent Trades</div>
+          <div class="stat-value">{{ wallet["recent_trade_count"] or 0 }}</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Recent Win Rate</div>
+          <div class="stat-value">{{ "%.2f"|format((wallet["recent_win_rate"] or 0) * 100) }}%</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Realized PnL</div>
+          <div class="stat-value {% if (wallet['realized_pnl'] or 0) >= 0 %}green{% else %}red{% endif %}">
+            {{ "%.2f"|format(wallet["realized_pnl"] or 0) }}
+          </div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-label">Status</div>
+          <div class="stat-value">{% if wallet["is_goat"] %}GOAT{% else %}Filtered{% endif %}</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0;">Recent BTC Trades</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Side</th>
+            <th>Outcome</th>
+            <th>Size</th>
+            <th>Price</th>
+            <th>Market</th>
+            <th>Time</th>
+            <th>Tx</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in trades %}
+          <tr>
+            <td>{{ t["side"] }}</td>
+            <td>{{ t["outcome"] }}</td>
+            <td>{{ "%.2f"|format(t["size"] or 0) }}</td>
+            <td>{{ "%.4f"|format(t["price"] or 0) }}</td>
+            <td class="market-title">{{ t["title"] }}</td>
+            <td>{{ ts_to_iso(t["timestamp"]) }}</td>
+            <td class="mono">{{ t["tx_hash"] }}</td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="7" class="muted">No trades found for this wallet yet.</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</body>
+</html>
