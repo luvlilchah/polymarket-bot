@@ -15,14 +15,18 @@ CONFIG_PATH = BASE_DIR / "config.json"
 DATA_API = "https://data-api.polymarket.com"
 GAMMA_API = "https://gamma-api.polymarket.com"
 
-MAX_AGE_MS = 15 * 60 * 1000
-MIN_AVG_SIZE = 10.0
+MAX_AGE_MS        = 15 * 60 * 1000  # 15 min — trade must be this recent to count
+MIN_AVG_SIZE      = 10.0
 MIN_RECENT_TRADES = 2
-ROLLING_MARKETS = 18
-ELITE_COUNT = 20
-MAX_WALLETS = 100
-RETRY_ATTEMPTS = 3
-RETRY_DELAY = 1.5
+ROLLING_MARKETS   = 18
+ELITE_COUNT       = 20
+MAX_WALLETS       = 100
+RETRY_ATTEMPTS    = 3
+RETRY_DELAY       = 1.5
+
+FAST_LOOP_INTERVAL_S = 5    # how often to check for new live trades
+SLOW_LOOP_INTERVAL_S = 300  # how often to rescore wallets and refresh PnL
+PNL_REFRESH_INTERVAL_S = 300
 
 
 # ---------------------------------------------------------------------------
@@ -56,10 +60,8 @@ def safe_get_json(url: str, params: dict | None = None):
             print(f"Server error (attempt {attempt + 1}): {url} — {e}")
         except Exception as e:
             print(f"Request failed (attempt {attempt + 1}): {url} — {e}")
-
         if attempt < RETRY_ATTEMPTS - 1:
             time.sleep(RETRY_DELAY * (2 ** attempt))
-
     return None
 
 
@@ -97,7 +99,6 @@ def looks_like_btc_5m(row: dict) -> bool:
     series_slug = ""
     for event in (row.get("events") or []):
         series_slug = (event.get("seriesSlug") or "").lower()
-
     if "btc-updown-5m" in slug:
         return True
     if "btc-up-or-down-5m" in series_slug:
@@ -109,18 +110,20 @@ def looks_like_btc_5m(row: dict) -> bool:
     return False
 
 
+def is_btc_5m_trade(trade: dict, valid_condition_ids: set[str]) -> bool:
+    condition_id = trade.get("conditionId") or ""
+    if condition_id and condition_id in valid_condition_ids:
+        return True
+    slug = (trade.get("slug") or trade.get("eventSlug") or "").lower()
+    return "btc-updown-5m" in slug
+
+
 def discover_btc_5m_markets() -> tuple[dict | None, list[dict]]:
     all_rows: list[dict] = []
-
     for offset in range(0, 1000, 200):
         data = safe_get_json(
             f"{GAMMA_API}/markets",
-            params={
-                "limit": 200,
-                "offset": offset,
-                "order": "createdAt",
-                "ascending": "false",
-            },
+            params={"limit": 200, "offset": offset, "order": "createdAt", "ascending": "false"},
         )
         if not data or not isinstance(data, list):
             break
@@ -137,7 +140,6 @@ def discover_btc_5m_markets() -> tuple[dict | None, list[dict]]:
         condition_id = row.get("conditionId")
         if not condition_id:
             continue
-
         end_date_raw = row.get("endDate") or row.get("end_date") or ""
         end_ts = None
         if end_date_raw:
@@ -147,16 +149,13 @@ def discover_btc_5m_markets() -> tuple[dict | None, list[dict]]:
                 ).timestamp() * 1000)
             except Exception:
                 pass
-
         if not end_ts or end_ts <= now_ms:
             continue
-
         clob_ids_raw = row.get("clobTokenIds") or "[]"
         try:
             clob_token_ids = json.loads(clob_ids_raw)
         except Exception:
             clob_token_ids = []
-
         btc_markets.append({
             "slug": row.get("slug") or "",
             "condition_id": condition_id,
@@ -171,7 +170,7 @@ def discover_btc_5m_markets() -> tuple[dict | None, list[dict]]:
 
 
 # ---------------------------------------------------------------------------
-# Wallet collection
+# Wallet collection (slow loop)
 # ---------------------------------------------------------------------------
 
 def _extract_rows(data, *keys: str) -> list:
@@ -211,7 +210,6 @@ def fetch_leaderboard_wallets(conn) -> int:
 
 
 def fetch_market_holders(conn, condition_id: str) -> int:
-    # holders endpoint uses condition_id with 'market' param
     data = safe_get_json(f"{DATA_API}/holders", params={"market": condition_id})
     if not data:
         return 0
@@ -227,100 +225,140 @@ def fetch_market_holders(conn, condition_id: str) -> int:
     return added
 
 
-def fetch_market_traders(conn, token_id: str) -> int:
-    # trades endpoint uses token_id with 'token' param
+def fetch_market_traders(conn, token_id: str, valid_condition_ids: set[str]) -> int:
     data = safe_get_json(f"{DATA_API}/trades", params={"token": token_id, "limit": 200})
     if not data:
         return 0
     rows = _extract_rows(data, "history", "data", "trades")
     added = 0
     for row in rows:
+        if not is_btc_5m_trade(row, valid_condition_ids):
+            continue
         address = _extract_address(row) or row.get("user") or row.get("maker") or None
         if not address:
             continue
-        upsert_wallet(conn, address=address, source="market_trade")
+        upsert_wallet(conn, address=address, source="market_trade",
+                      name=row.get("name"), pseudonym=row.get("pseudonym"))
         added += 1
     return added
 
 
 # ---------------------------------------------------------------------------
-# Trade fetching
+# Fast loop — one call to market trades endpoint, match against known wallets
 # ---------------------------------------------------------------------------
 
-def _normalize_timestamp(ts) -> int:
-    ts = int(ts)
-    return ts * 1000 if ts and ts < 10_000_000_000 else ts
-
-
-def fetch_recent_trades(conn, wallet: str, token_id: str, limit: int = 20) -> list[dict]:
-    # trades endpoint uses 'token' param not 'market'
+def fast_tick(conn, current_token_id: str, valid_condition_ids: set[str]) -> int:
+    """
+    Single API call to get the latest trades on the current market.
+    Stores any new trades from known wallets instantly.
+    Returns number of new trades saved.
+    """
     data = safe_get_json(
         f"{DATA_API}/trades",
-        params={"user": wallet, "token": token_id, "limit": limit},
+        params={"token": current_token_id, "limit": 50},
     )
     if not data:
-        return []
+        return 0
 
     rows = _extract_rows(data, "history", "data", "trades")
-    out = []
 
-    for row in rows[:limit]:
+    # load known wallet addresses into a set for O(1) lookup
+    known = {
+        row[0] for row in conn.execute("SELECT address FROM wallets").fetchall()
+    }
+
+    saved = 0
+    for row in rows:
+        if not is_btc_5m_trade(row, valid_condition_ids):
+            continue
+
+        address = _extract_address(row) or row.get("user") or row.get("maker") or None
+        if not address or address not in known:
+            continue
+
         tx_hash = row.get("transactionHash") or row.get("txHash") or row.get("id")
         if not tx_hash:
             continue
 
-        raw_ts = row.get("timestamp", 0) or row.get("time", 0) or 0
-        timestamp = _normalize_timestamp(raw_ts) if raw_ts else 0
-        size = float(row.get("size", 0) or row.get("shares", 0) or 0)
+        raw_ts = int(row.get("timestamp", 0) or 0)
+        timestamp = raw_ts * 1000 if raw_ts and raw_ts < 10_000_000_000 else raw_ts
+        size = float(row.get("size", 0) or 0)
         price = float(row.get("price", 0) or 0)
-        side = str(row.get("side") or row.get("type") or "?")
+        side = str(row.get("side") or "?")
         outcome = str(row.get("outcome") or row.get("outcomeIndex") or "?")
-        title = row.get("title") or row.get("marketTitle") or row.get("question") or "Unknown market"
-        market_slug = row.get("slug") or row.get("marketSlug") or ""
-        resolved_pnl = float(row.get("pnl", 0) or row.get("profit", 0) or 0)
-        is_win = 1 if resolved_pnl > 0 else (0 if resolved_pnl < 0 else -1)
+        title = row.get("title") or "Unknown market"
+        market_slug = row.get("slug") or row.get("eventSlug") or ""
 
-        conn.execute(
+        cursor = conn.execute(
             """
             INSERT OR IGNORE INTO trades
             (tx_hash, wallet, side, outcome, size, price, title, market_slug,
              timestamp, resolved_pnl, is_win, is_elite)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 0, -1, 0)
             """,
-            (tx_hash, wallet, side, outcome, size, price, title, market_slug,
-             timestamp, resolved_pnl, is_win),
+            (tx_hash, address, side, outcome, size, price, title, market_slug, timestamp),
         )
+        if cursor.rowcount:
+            saved += 1
 
-        out.append({
-            "tx_hash": tx_hash, "wallet": wallet, "side": side, "outcome": outcome,
-            "size": size, "price": price, "title": title, "market_slug": market_slug,
-            "timestamp": timestamp, "resolved_pnl": resolved_pnl, "is_win": is_win,
-        })
-
-    return out
+    return saved
 
 
 # ---------------------------------------------------------------------------
-# Rolling realized PnL
+# Closed positions PnL — cached per wallet
 # ---------------------------------------------------------------------------
 
-def rolling_realized_pnl(wallet: str, rolling_token_ids: list[str]) -> float:
-    total = 0.0
-    for token_id in rolling_token_ids:
-        data = safe_get_json(
-            f"{DATA_API}/trades",
-            params={"user": wallet, "token": token_id, "limit": 20},
-        )
-        if not data:
+def fetch_closed_positions_pnl(
+    conn, wallet: str, rolling_token_ids: list[str]
+) -> tuple[float, int, int]:
+    now_s = int(time.time())
+    row = conn.execute(
+        "SELECT last_pnl_check_ts, realized_pnl, recent_win_rate, recent_trade_count FROM wallets WHERE address = ?",
+        (wallet,),
+    ).fetchone()
+
+    last_check = int(row["last_pnl_check_ts"] or 0) if row and row["last_pnl_check_ts"] else 0
+    if now_s - last_check < PNL_REFRESH_INTERVAL_S:
+        if row:
+            cached_pnl = float(row["realized_pnl"] or 0)
+            cached_wr = float(row["recent_win_rate"] or 0.5)
+            cached_trades = int(row["recent_trade_count"] or 0)
+            wins = round(cached_wr * cached_trades)
+            losses = cached_trades - wins
+            return cached_pnl, wins, losses
+        return 0.0, 0, 0
+
+    data = safe_get_json(
+        f"{DATA_API}/positions",
+        params={"user": wallet, "sizeThreshold": "0"},
+    )
+    conn.execute(
+        "UPDATE wallets SET last_pnl_check_ts = ? WHERE address = ?",
+        (now_s, wallet),
+    )
+    if not data:
+        return 0.0, 0, 0
+
+    rows = _extract_rows(data, "positions", "data")
+    token_set = set(rolling_token_ids)
+    total_pnl = 0.0
+    wins = 0
+    losses = 0
+    for r in rows:
+        asset = r.get("asset") or r.get("tokenId") or ""
+        if asset not in token_set:
             continue
-        rows = _extract_rows(data, "history", "data", "trades")
-        for row in rows:
-            total += float(row.get("pnl", 0) or row.get("profit", 0) or 0)
-    return total
+        pnl = float(r.get("realizedPnl") or r.get("pnl") or 0)
+        total_pnl += pnl
+        if pnl > 0:
+            wins += 1
+        elif pnl < 0:
+            losses += 1
+    return total_pnl, wins, losses
 
 
 # ---------------------------------------------------------------------------
-# Wallet scoring
+# Wallet scoring (slow loop)
 # ---------------------------------------------------------------------------
 
 def score_wallet(conn, wallet: str, rolling_token_ids: list[str]) -> None:
@@ -343,42 +381,26 @@ def score_wallet(conn, wallet: str, rolling_token_ids: list[str]) -> None:
         avg_size = sum(float(r["size"] or 0) for r in recent_trades) / recent_trade_count
         last_trade_ts = max(int(r["timestamp"] or 0) for r in recent_trades)
 
-    resolved = [r for r in recent_trades if r["is_win"] in (0, 1)]
-    wins = sum(1 for r in resolved if r["is_win"] == 1)
-    recent_win_rate = (wins / len(resolved)) if resolved else 0.5
-
-    streak = 0
-    if resolved:
-        first_result = resolved[0]["is_win"]
-        for r in resolved:
-            if r["is_win"] == first_result:
-                streak += 1
-            else:
-                break
-        if first_result == 0:
-            streak = -streak
-
-    rolling_pnl = rolling_realized_pnl(wallet, rolling_token_ids)
+    rolling_pnl, wins, losses = fetch_closed_positions_pnl(conn, wallet, rolling_token_ids)
+    total_resolved = wins + losses
+    recent_win_rate = (wins / total_resolved) if total_resolved > 0 else 0.5
+    streak = wins - losses
 
     now_ms = int(time.time() * 1000)
     age_ms = (now_ms - last_trade_ts) if last_trade_ts else 10 ** 15
 
     recency_bonus = max(0.0, (MAX_AGE_MS - age_ms) / MAX_AGE_MS) * 600.0
-    size_bonus = min(avg_size, 250.0) * 3.0
-    streak_bonus = max(streak, 0) * 120.0
-    trade_bonus = min(recent_trade_count, 10) * 30.0
+    size_bonus    = min(avg_size, 250.0) * 3.0
+    streak_bonus  = max(streak, 0) * 120.0
+    trade_bonus   = min(recent_trade_count, 10) * 30.0
     rolling_bonus = max(rolling_pnl, 0) * 0.02
-    win_bonus = recent_win_rate * 200.0
+    win_bonus     = recent_win_rate * 200.0
 
     penalty = 0.0
-    if avg_size < MIN_AVG_SIZE:
-        penalty += 600.0
-    if recent_trade_count < MIN_RECENT_TRADES:
-        penalty += 500.0
-    if age_ms > MAX_AGE_MS:
-        penalty += 1000.0
-    if streak < -2:
-        penalty += abs(streak) * 60.0
+    if avg_size < MIN_AVG_SIZE:      penalty += 600.0
+    if recent_trade_count < MIN_RECENT_TRADES: penalty += 500.0
+    if age_ms > MAX_AGE_MS:          penalty += 1000.0
+    if streak < -2:                  penalty += abs(streak) * 60.0
 
     goat_score = recency_bonus + size_bonus + streak_bonus + trade_bonus + rolling_bonus + win_bonus - penalty
 
@@ -389,147 +411,139 @@ def score_wallet(conn, wallet: str, rolling_token_ids: list[str]) -> None:
         and goat_score > 0
     )
 
-    if age_ms > MAX_AGE_MS:
-        goat_reason = "stale"
-    elif avg_size < MIN_AVG_SIZE:
-        goat_reason = "small_size"
-    elif recent_trade_count < MIN_RECENT_TRADES:
-        goat_reason = "too_few_trades"
-    elif not is_goat:
-        goat_reason = "low_score"
-    else:
-        goat_reason = "goat"
+    if age_ms > MAX_AGE_MS:               goat_reason = "stale"
+    elif avg_size < MIN_AVG_SIZE:          goat_reason = "small_size"
+    elif recent_trade_count < MIN_RECENT_TRADES: goat_reason = "too_few_trades"
+    elif not is_goat:                      goat_reason = "low_score"
+    else:                                  goat_reason = "goat"
 
     conn.execute(
         """
         UPDATE wallets
-        SET score              = ?,
-            current_streak     = ?,
-            recent_pnl         = ?,
-            avg_size           = ?,
-            recent_trade_count = ?,
-            recent_win_rate    = ?,
-            realized_pnl       = ?,
-            last_trade_ts      = ?,
-            is_goat            = ?,
-            goat_reason        = ?
-        WHERE address = ?
+        SET score=?, current_streak=?, recent_pnl=?, avg_size=?,
+            recent_trade_count=?, recent_win_rate=?, realized_pnl=?,
+            last_trade_ts=?, is_goat=?, goat_reason=?
+        WHERE address=?
         """,
         (goat_score, streak, rolling_pnl, avg_size, recent_trade_count,
          recent_win_rate, rolling_pnl, last_trade_ts, is_goat, goat_reason, wallet),
     )
 
 
-# ---------------------------------------------------------------------------
-# Elite marking
-# ---------------------------------------------------------------------------
-
 def mark_elite_wallet_trades(conn) -> None:
     elite_wallets = conn.execute(
-        """
-        SELECT address FROM wallets
-        WHERE is_goat = 1
-        ORDER BY score DESC
-        LIMIT ?
-        """,
+        "SELECT address FROM wallets WHERE is_goat=1 ORDER BY score DESC LIMIT ?",
         (ELITE_COUNT,),
     ).fetchall()
-
-    elite_set = {row["address"] for row in elite_wallets}
-    conn.execute("UPDATE trades SET is_elite = 0")
+    elite_set = {row[0] for row in elite_wallets}
+    conn.execute("UPDATE trades SET is_elite=0")
     for wallet in elite_set:
-        conn.execute("UPDATE trades SET is_elite = 1 WHERE wallet = ?", (wallet,))
+        conn.execute("UPDATE trades SET is_elite=1 WHERE wallet=?", (wallet,))
 
 
 # ---------------------------------------------------------------------------
-# Main loop
+# Main loop — two speeds
 # ---------------------------------------------------------------------------
 
 def collector_loop() -> None:
-    cfg = load_config()
-    poll_seconds = int(cfg.get("poll_seconds", 15))
-
     init_db()
 
+    last_slow_tick = 0.0
+    current_market = None
+    rolling_markets: list[dict] = []
+    current_token_id = ""
+    valid_condition_ids: set[str] = set()
+    rolling_token_ids: list[str] = []
+
+    print("Collector starting...")
+
     while True:
-        print("Collector tick...")
-        tick_start = time.time()
+        now = time.time()
 
-        current_market, rolling_markets = discover_btc_5m_markets()
-        if not current_market:
-            print("No active BTC 5m markets found. Sleeping...")
-            time.sleep(poll_seconds)
-            continue
+        # ── SLOW LOOP: rediscover markets, rescore wallets ──────────────────
+        if now - last_slow_tick >= SLOW_LOOP_INTERVAL_S:
+            print("Slow tick — rediscovering markets and rescoring wallets...")
+            current_market, rolling_markets = discover_btc_5m_markets()
 
-        # trades API uses clobTokenId, holders API uses conditionId
-        clob_ids = current_market.get("clob_token_ids") or []
-        current_token_id = clob_ids[0] if clob_ids else current_market["condition_id"]
-        current_condition_id = current_market["condition_id"]
+            if current_market:
+                clob_ids = current_market.get("clob_token_ids") or []
+                current_token_id = clob_ids[0] if clob_ids else current_market["condition_id"]
 
-        # rolling token IDs for PnL scoring
-        rolling_token_ids = []
-        for m in rolling_markets:
-            ids = m.get("clob_token_ids") or []
-            if ids:
-                rolling_token_ids.append(ids[0])
+                rolling_token_ids = []
+                valid_condition_ids = set()
+                for m in rolling_markets:
+                    rolling_token_ids.extend(m.get("clob_token_ids") or [])
+                    if m.get("condition_id"):
+                        valid_condition_ids.add(m["condition_id"])
 
-        cfg["market"]["slug"] = current_market["slug"]
-        cfg["market"]["condition_id"] = current_condition_id
-        cfg["market"]["token_id"] = current_token_id
-        cfg["market"]["rolling_count"] = len(rolling_markets)
-        save_config(cfg)
+                cfg = load_config()
+                cfg["market"]["slug"] = current_market["slug"]
+                cfg["market"]["condition_id"] = current_market["condition_id"]
+                cfg["market"]["token_id"] = current_token_id
+                cfg["market"]["rolling_count"] = len(rolling_markets)
+                save_config(cfg)
 
-        conn = get_conn()
-        try:
-            traders_added = fetch_market_traders(conn, current_token_id)
-            holders_added = fetch_market_holders(conn, current_condition_id)
-            leaderboard_added = fetch_leaderboard_wallets(conn)
+                conn = get_conn()
+                try:
+                    fetch_market_traders(conn, current_token_id, valid_condition_ids)
+                    fetch_market_holders(conn, current_market["condition_id"])
+                    fetch_leaderboard_wallets(conn)
 
-            wallets = conn.execute(
-                """
-                SELECT address FROM wallets
-                ORDER BY
-                    CASE source
-                        WHEN 'market_trade' THEN 1
-                        WHEN 'holders'      THEN 2
-                        WHEN 'leaderboard'  THEN 3
-                        ELSE 4
-                    END,
-                    address ASC
-                LIMIT ?
-                """,
-                (MAX_WALLETS,),
-            ).fetchall()
+                    wallets = conn.execute(
+                        """
+                        SELECT address FROM wallets
+                        ORDER BY CASE source
+                            WHEN 'market_trade' THEN 1
+                            WHEN 'holders'      THEN 2
+                            WHEN 'leaderboard'  THEN 3
+                            ELSE 4
+                        END, address ASC
+                        LIMIT ?
+                        """,
+                        (MAX_WALLETS,),
+                    ).fetchall()
 
-            for row in wallets:
-                fetch_recent_trades(conn, row["address"], current_token_id, limit=20)
-                score_wallet(conn, row["address"], rolling_token_ids)
+                    for row in wallets:
+                        score_wallet(conn, row[0], rolling_token_ids)
 
-            mark_elite_wallet_trades(conn)
+                    mark_elite_wallet_trades(conn)
 
-            conn.execute(
-                """
-                INSERT INTO meta(key, value) VALUES('last_run_ms', ?)
-                ON CONFLICT(key) DO UPDATE SET value = excluded.value
-                """,
-                (str(int(time.time() * 1000)),),
-            )
-            conn.commit()
+                    conn.execute(
+                        "INSERT INTO meta(key,value) VALUES('last_run_ms',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        (str(int(time.time() * 1000)),),
+                    )
+                    conn.commit()
+                    print(f"Slow tick done. slug={current_market['slug']} wallets={len(wallets)}")
+                except Exception as e:
+                    print(f"Slow tick error: {e}")
+                    conn.rollback()
+                finally:
+                    conn.close()
+            else:
+                print("No active BTC 5m markets found.")
 
-        except Exception as e:
-            print(f"Tick error: {e}")
-            conn.rollback()
-        finally:
-            conn.close()
+            last_slow_tick = time.time()
 
-        elapsed = time.time() - tick_start
-        print(
-            f"Done in {elapsed:.1f}s. slug={current_market['slug']} "
-            f"token={current_token_id[:12]}... "
-            f"rolling={len(rolling_markets)} traders={traders_added} "
-            f"holders={holders_added} leaderboard={leaderboard_added}"
-        )
-        time.sleep(max(0, poll_seconds - elapsed))
+        # ── FAST LOOP: one call, check for new elite trades ─────────────────
+        if current_token_id:
+            conn = get_conn()
+            try:
+                new_trades = fast_tick(conn, current_token_id, valid_condition_ids)
+                if new_trades:
+                    mark_elite_wallet_trades(conn)
+                    conn.execute(
+                        "INSERT INTO meta(key,value) VALUES('last_run_ms',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        (str(int(time.time() * 1000)),),
+                    )
+                    print(f"Fast tick: {new_trades} new trade(s) from known wallets")
+                conn.commit()
+            except Exception as e:
+                print(f"Fast tick error: {e}")
+                conn.rollback()
+            finally:
+                conn.close()
+
+        time.sleep(FAST_LOOP_INTERVAL_S)
 
 
 if __name__ == "__main__":
