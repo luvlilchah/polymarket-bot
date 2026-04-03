@@ -30,6 +30,7 @@ def init_db() -> None:
                 recent_win_rate    REAL    DEFAULT 0,
                 realized_pnl       REAL    DEFAULT 0,
                 last_trade_ts      INTEGER,
+                last_pnl_check_ts  INTEGER DEFAULT 0,
                 is_goat            INTEGER DEFAULT 0,
                 goat_reason        TEXT
             );
@@ -61,11 +62,11 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_wallets_score    ON wallets(score DESC);
         """)
 
-        # Migrations for existing databases
-        _add_column_if_missing(conn, "wallets", "is_goat",      "INTEGER DEFAULT 0")
-        _add_column_if_missing(conn, "wallets", "goat_reason",  "TEXT")
-        _add_column_if_missing(conn, "trades",  "resolved_pnl", "REAL    DEFAULT 0")
-        _add_column_if_missing(conn, "trades",  "is_win",       "INTEGER DEFAULT -1")
+        _add_column_if_missing(conn, "wallets", "is_goat",           "INTEGER DEFAULT 0")
+        _add_column_if_missing(conn, "wallets", "goat_reason",       "TEXT")
+        _add_column_if_missing(conn, "wallets", "last_pnl_check_ts", "INTEGER DEFAULT 0")
+        _add_column_if_missing(conn, "trades",  "resolved_pnl",      "REAL    DEFAULT 0")
+        _add_column_if_missing(conn, "trades",  "is_win",            "INTEGER DEFAULT -1")
 
         conn.commit()
     finally:
