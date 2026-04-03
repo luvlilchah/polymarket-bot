@@ -255,7 +255,7 @@ def fast_tick(conn, current_token_id: str, valid_condition_ids: set[str]) -> int
     """
     data = safe_get_json(
         f"{DATA_API}/trades",
-        params={"token": current_token_id, "limit": 50},
+        params={"token": current_token_id, "limit": 200},
     )
     if not data:
         return 0
@@ -505,6 +505,7 @@ def collector_loop() -> None:
 
                     for row in wallets:
                         score_wallet(conn, row[0], rolling_token_ids)
+                        time.sleep(0.1)
 
                     mark_elite_wallet_trades(conn)
 
